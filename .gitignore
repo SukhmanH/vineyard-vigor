@@ -1,0 +1,17 @@
+# Private vineyard geodata - never commit real block polygons
+data/*
+!data/blocks.geojson.example
+
+# Generated outputs (dashboard embeds real coordinates)
+outputs/
+
+# Python
+.ipynb_checkpoints/
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+
+# Internal design docs and agent tooling - keep local
+README.md
+.claude/

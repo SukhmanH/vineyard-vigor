@@ -1,0 +1,25 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "block_id": "example-b1",
+        "site": "ExampleSite",
+        "variety": "Pinot Noir",
+        "planting_year": 2020,
+        "baseline_start": 2021
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[
+          [-119.500000, 49.200000],
+          [-119.499000, 49.200000],
+          [-119.499000, 49.199000],
+          [-119.500000, 49.199000],
+          [-119.500000, 49.200000]
+        ]]
+      }
+    }
+  ]
+}
