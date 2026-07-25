@@ -13,5 +13,5 @@ __pycache__/
 .venv/
 
 # Internal design docs and agent tooling - keep local
-README.md
+INTERNAL_SPEC.md
 .claude/
