@@ -116,4 +116,11 @@ published here.
 
 ## License
 
-MIT
+Copyright (C) 2026 Sukhman Herr
+
+Licensed under the GNU Affero General Public License v3.0. You may use, modify,
+and redistribute this software, but derivative works must also be released under
+the AGPL-3.0 - including works made available over a network. See
+[LICENSE](LICENSE).
+
+For commercial licensing outside these terms, contact the author.
