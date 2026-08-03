@@ -38,7 +38,6 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 PROCESSED = ROOT / "data" / "processed"
-BLOCKS = ROOT / "data" / "blocks.geojson"
 DASH = ROOT / "outputs" / "dashboard" / "index.html"
 
 SITE_REPO = "https://github.com/SukhmanH/hbwebsite"
@@ -69,7 +68,7 @@ def refresh_timeseries() -> None:
     from vigor import extract, ingest
 
     extract.init_ee()
-    gdf = extract.load_blocks(BLOCKS)
+    gdf = extract.load_blocks()
 
     path = PROCESSED / "block_timeseries.parquet"
     old = ingest.load_timeseries(path)
@@ -136,7 +135,7 @@ def refresh_zones_if_season_done(ts: pd.DataFrame) -> None:
     if not missing:
         return
 
-    gdf = extract.load_blocks(BLOCKS)
+    gdf = extract.load_blocks()
     for y in missing:
         log(f"zoning completed season {y}...")
         pixels = extract.fetch_pixels(extract.sample_seasonal_profiles(gdf, y))
@@ -150,19 +149,28 @@ def refresh_zones_if_season_done(ts: pd.DataFrame) -> None:
 
 def refresh_derived(with_ee: bool) -> None:
     """Rebuild features and alerts (offline); zones too when EE is allowed."""
-    import geopandas as gpd
-
     from vigor import clean, features, ingest, vigor_alerts
 
     ts = ingest.load_timeseries(PROCESSED / "block_timeseries.parquet")
 
-    _, smoothed = clean.clean_and_smooth(ts)
+    observations, smoothed = clean.clean_and_smooth(ts)
     feats = features.seasonal_features(smoothed)
     features.write_features(feats, PROCESSED / "season_features.parquet")
     log(f"features: {len(feats)} block-seasons")
 
-    meta = gpd.read_file(BLOCKS)
-    meta.columns = meta.columns.str.strip()
+    # Alerts judge raw per-scene NDVI, so smoke and residual haze - which no
+    # cloud mask catches - used to read as low vigor. Drop the observations
+    # flag_outliers marks before the baseline comparison; features already
+    # went through the same screen via clean_and_smooth.
+    dropped = observations[observations["is_outlier"]]
+    bad = set(zip(dropped["block_id"], dropped["date"]))
+    ts = ts[[(b, d) not in bad for b, d in zip(ts["block_id"], ts["date"])]].copy()
+    log(f"screened {len(dropped)} smoke/haze observations before alerting")
+
+    from vigor.blocks import block_meta
+
+    meta = block_meta()
+
     bs = {}
     if "baseline_start" in meta.columns:
         bs = {r.block_id: int(r.baseline_start) for r in meta.itertuples()
@@ -171,6 +179,15 @@ def refresh_derived(with_ee: bool) -> None:
     vigor_alerts.write_alerts(alerts, PROCESSED / "vigor_alerts.parquet")
     n_low = int(alerts["below_baseline"].sum())
     log(f"alerts: {len(alerts)} judged observations, {n_low} below baseline")
+
+    # Same-variety comparison: weather pushes every peer down together, a
+    # failed emitter pushes one. Peers share soil, aspect and management at
+    # true block resolution, which no gridded weather product can match.
+    if "variety" in meta.columns:
+        peers = vigor_alerts.compare_same_variety(alerts, meta)
+        peers.to_parquet(PROCESSED / "variety_comparison.parquet", index=False)
+        counts = peers["reading"].value_counts().to_dict() if len(peers) else {}
+        log(f"variety comparison: {len(peers)} block-seasons judged {counts}")
 
     if with_ee:
         refresh_zones_if_season_done(ts)
@@ -188,7 +205,7 @@ def refresh_derived(with_ee: bool) -> None:
 def rebuild_dashboard() -> None:
     from vigor.webdash import build_dashboard
 
-    out = build_dashboard(PROCESSED, BLOCKS, DASH.parent)
+    out = build_dashboard(PROCESSED, out_dir=DASH.parent)
     log(f"dashboard rebuilt -> {out}")
 
 

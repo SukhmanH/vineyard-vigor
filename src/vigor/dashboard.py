@@ -18,7 +18,6 @@ import html
 import io
 from pathlib import Path
 
-import geopandas as gpd
 import matplotlib
 
 matplotlib.use("Agg")  # headless; no display needed to render figures
@@ -26,6 +25,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 import pandas as pd  # noqa: E402
 
 from . import plots  # noqa: E402
+from .blocks import DEFAULT_BLOCKS_PATH, block_meta  # noqa: E402
 
 # Palette (dataviz reference instance) - keep the dashboard consistent with the
 # figures it embeds.
@@ -51,25 +51,15 @@ def _load(path: Path) -> pd.DataFrame | None:
     return pd.read_parquet(path) if path.exists() else None
 
 
-def _block_meta(blocks_path: Path) -> pd.DataFrame:
-    """block_id -> site/variety/planting_year, straight from the geojson.
-
-    Offline (geopandas only); avoids importing the Earth Engine module.
-    """
-    gdf = gpd.read_file(blocks_path)
-    gdf.columns = gdf.columns.str.strip()
-    cols = [c for c in ["block_id", "site", "variety", "planting_year", "baseline_start"]
-            if c in gdf.columns]
-    return pd.DataFrame(gdf[cols])
-
-
 def build_dashboard(
     processed_dir: str | Path,
-    blocks_path: str | Path,
-    out_dir: str | Path,
+    blocks_path: str | Path | None = None,
+    out_dir: str | Path | None = None,
     freeze_year: int = 2024,
 ) -> Path:
     """Assemble the dashboard HTML and return the written path."""
+    if out_dir is None:
+        raise TypeError("out_dir is required")
     processed_dir = Path(processed_dir)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -78,7 +68,7 @@ def build_dashboard(
     feats = _load(processed_dir / "season_features.parquet")
     zoned = _load(processed_dir / "vigor_zones.parquet")
     alerts = _load(processed_dir / "vigor_alerts.parquet")
-    meta = _block_meta(Path(blocks_path))
+    meta = block_meta(Path(blocks_path) if blocks_path is not None else DEFAULT_BLOCKS_PATH)
     if ts is None:
         raise FileNotFoundError("block_timeseries.parquet is required to build the dashboard.")
 
@@ -270,7 +260,6 @@ if __name__ == "__main__":  # manual refresh: python -m vigor.dashboard
     root = Path(__file__).resolve().parents[2]
     out = build_dashboard(
         processed_dir=root / "data" / "processed",
-        blocks_path=root / "data" / "blocks.geojson",
         out_dir=root / "outputs" / "dashboard",
     )
     print(f"dashboard -> {out}")

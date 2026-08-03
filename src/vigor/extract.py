@@ -37,11 +37,44 @@ L9_COLLECTION = "LANDSAT/LC09/C02/T1_L2"
 LANDSAT_SCALE = 30
 LANDSAT_START_YEAR = 2014  # first full L8 year over the Okanagan
 
+# ERA5-Land daily reanalysis: the weather covariates behind residual alerts.
+# ~11 km cells, so this is a per-SITE signal - reduced at the site centroid,
+# never per block (every block at a site would return the same number). Being
+# a reanalysis it lags real time by roughly a week; the percentile alert path
+# stays current, the residual path does not.
+ERA5_COLLECTION = "ECMWF/ERA5_LAND/DAILY_AGGR"
+ERA5_SCALE = 11132  # native ERA5-Land grid, ~0.1 degrees
+WEATHER_START_YEAR = 2019
+ERA5_BANDS = [
+    "temperature_2m_max",
+    "temperature_2m_min",
+    "total_precipitation_sum",
+    "dewpoint_temperature_2m",
+    "potential_evaporation_sum",
+    "volumetric_soil_water_layer_1",
+]
+
 EDGE_BUFFER_M = -1.0  # trim the immediate polygon edge without losing block area
 MIN_PIXELS = 10  # warn and skip blocks smaller than this after buffering
 PIXEL_AREA_M2 = 100.0  # 10 m pixels
 
 REQUIRED_PROPS = ("block_id", "site")
+
+# Reading and canonicalising blocks.geojson lives in vigor.blocks, which has
+# no Earth Engine import so the offline modules can use it too. Re-exported
+# here because callers historically reached for extract.
+from .blocks import (  # noqa: E402
+    DEFAULT_BLOCKS_PATH,
+    VARIETY_ALIASES,
+    canonical_site,
+    canonical_variety,
+    load_block_frame,
+)
+
+__all_blocks__ = [
+    "DEFAULT_BLOCKS_PATH", "VARIETY_ALIASES",
+    "canonical_site", "canonical_variety", "load_block_frame",
+]
 
 
 def init_ee(project: str = GEE_PROJECT_ID) -> None:
@@ -53,17 +86,17 @@ def init_ee(project: str = GEE_PROJECT_ID) -> None:
         ee.Initialize(project=project)
 
 
-def load_blocks(path: str | Path) -> gpd.GeoDataFrame:
+def load_blocks(path: str | Path | None = None) -> gpd.GeoDataFrame:
     """Load block polygons and apply the -1 m edge buffer in UTM 11N.
 
     Returns a GeoDataFrame in EPSG:32611 with the planted extent as the active
     geometry plus `geometry_buffered`, `area_ha`, and `n_pixels` columns.
     Blocks under MIN_PIXELS after buffering are dropped with a warning.
     """
-    gdf = gpd.read_file(path)
-    # Hand-drawn geojson properties sometimes carry stray whitespace in keys
-    # (e.g. "block_id "); normalize before validating.
-    gdf.columns = gdf.columns.str.strip()
+    # Key stripping and site/variety canonicalisation happen in vigor.blocks,
+    # the single reader; this function adds only the projection, edge buffer
+    # and pixel-count layer on top.
+    gdf = load_block_frame(path)
 
     if "block_id" not in gdf.columns:
         warnings.warn(
@@ -429,6 +462,68 @@ def landsat_timeseries_table(
     )
     table = ee.FeatureCollection(scene_collections).flatten()
     return table.filter(ee.Filter.gt("total_count", 0))
+
+
+def site_centroids(gdf: gpd.GeoDataFrame) -> ee.FeatureCollection:
+    """One point per site, at the centroid of that site's blocks.
+
+    ERA5-Land cells are ~11 km across, so a per-block reduction would hand
+    back the same value for every block at a site while costing one reduction
+    each. The centroid is computed in the projected working CRS (a centroid
+    taken on a geographic grid is not the centre of anything).
+    """
+    sites = gdf.dissolve("site").to_crs(WORKING_CRS).centroid.to_crs("EPSG:4326")
+    return ee.FeatureCollection([
+        ee.Feature(ee.Geometry.Point([pt.x, pt.y]), {"site": str(site)})
+        for site, pt in sites.items()
+    ])
+
+
+def weather_table(
+    gdf: gpd.GeoDataFrame,
+    start_year: int = WEATHER_START_YEAR,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> ee.FeatureCollection:
+    """Lazy (day x site) ERA5-Land table in the collection's native units.
+
+    Kelvin and metres come back untouched; conversion is the offline layer's
+    job (see vigor.weather) so the extraction boundary stays a thin pass
+    through. Every calendar day is returned, dormant season included - the
+    trailing windows in vigor.weather need an unbroken series.
+    """
+    if start_date is None:
+        start_date = f"{start_year}-01-01"
+    if end_date is None:
+        end_date = (_dt.date.today() + _dt.timedelta(days=1)).isoformat()
+
+    points = site_centroids(gdf)
+    days = (
+        ee.ImageCollection(ERA5_COLLECTION)
+        .filterDate(start_date, end_date)
+        .select(ERA5_BANDS)
+    )
+
+    def _per_day(img: ee.Image) -> ee.FeatureCollection:
+        date = ee.Date(img.get("system:time_start")).format("YYYY-MM-dd")
+        return img.reduceRegions(
+            collection=points,
+            reducer=ee.Reducer.first(),
+            scale=ERA5_SCALE,
+        ).map(lambda f: f.set("date", date).setGeometry(None))
+
+    return days.map(_per_day).flatten()
+
+
+_WEATHER_RAW_NAMES = ["site", "date", *ERA5_BANDS]
+
+
+def fetch_weather(table: ee.FeatureCollection) -> pd.DataFrame:
+    """Pull a weather table in one getInfo, with a stable schema."""
+    info = table.getInfo()
+    return pd.DataFrame([f["properties"] for f in info["features"]]).reindex(
+        columns=_WEATHER_RAW_NAMES
+    )
 
 
 # Per-pixel seasonal profile (Phase 4). One band per growing-season month, so

@@ -31,6 +31,7 @@ from pathlib import Path
 import geopandas as gpd
 import pandas as pd
 
+from .blocks import DEFAULT_BLOCKS_PATH, load_block_frame
 from .clean import clean_and_smooth
 from .vigor_alerts import stress_events
 from ._webassets import render_page
@@ -308,6 +309,38 @@ def _landsat_json(ls: pd.DataFrame | None) -> dict:
     return out
 
 
+def _season_weather_json(w: pd.DataFrame | None) -> dict:
+    """Per site per season: heat summary for labelling the NDVI charts.
+
+    Annotation only. Weather showed no usable per-observation relationship
+    with NDVI residual (these blocks are irrigated, which is what drip is
+    for), so it informs no model and raises no alert - it is here so a reader
+    can see that e.g. 2021 was the heat-dome season while looking at the
+    curves. At ~11 km this is a per-SITE figure and identical for every block
+    at a site; it can never explain why two neighbouring blocks diverge.
+    """
+    if w is None or not len(w):
+        return {}
+
+    from .weather import GDD_BASE_C, HEAT_THRESHOLD_C, SEASON_START_MONTH
+
+    df = w.copy()
+    df["year"] = df["date"].dt.year
+    season = df[(df["date"].dt.month >= SEASON_START_MONTH)
+                & (df["date"].dt.month <= SEASON_END_MONTH)]
+
+    out: dict[str, list] = {}
+    for site, g in season.groupby("site"):
+        rows = []
+        for year, gy in g.groupby("year"):
+            gdd = float((((gy["tmax_c"] + gy["tmin_c"]) / 2) - GDD_BASE_C).clip(lower=0).sum())
+            hot = int((gy["tmax_c"] >= HEAT_THRESHOLD_C).sum())
+            rain = float(gy["precip_mm"].sum())
+            rows.append([int(year), round(gdd), hot, round(rain, 1)])
+        out[str(site)] = sorted(rows)
+    return out
+
+
 def _outlook_json(band: pd.DataFrame | None, summary: pd.DataFrame | None) -> dict:
     """Per block: the GP projection band for the rest of the season plus its
     headline numbers (projected peak / May-Sep integral with 80% ranges)."""
@@ -443,11 +476,13 @@ def _kpis(quality: pd.DataFrame, feats, al, meta) -> tuple[dict, int]:
 
 def build_dashboard(
     processed_dir: str | Path,
-    blocks_path: str | Path,
-    out_dir: str | Path,
+    blocks_path: str | Path | None = None,
+    out_dir: str | Path | None = None,
     freeze_year: int = 2024,
 ) -> Path:
     """Assemble the interactive dashboard HTML and return the written path."""
+    if out_dir is None:
+        raise TypeError("out_dir is required")
     processed_dir = Path(processed_dir)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -462,8 +497,9 @@ def build_dashboard(
     ol_band = _load(processed_dir / "season_outlook.parquet")
     ol_summary = _load(processed_dir / "outlook_summary.parquet")
     analogs = _load(processed_dir / "season_analogs.parquet")
+    site_weather = _load(processed_dir / "site_weather.parquet")
 
-    gdf = gpd.read_file(Path(blocks_path))
+    gdf = load_block_frame(Path(blocks_path) if blocks_path is not None else DEFAULT_BLOCKS_PATH)
     meta = _block_meta(gdf)
 
     quality = _quality(ts)
@@ -495,6 +531,7 @@ def build_dashboard(
         "landsat": _landsat_json(landsat),
         "outlook": _outlook_json(ol_band, ol_summary),
         "analogs": _analogs_json(analogs, meta),
+        "season_weather": _season_weather_json(site_weather),
     }
 
     html = render_page(json.dumps(data, separators=(",", ":")))
@@ -507,7 +544,6 @@ if __name__ == "__main__":  # manual refresh: python -m vigor.webdash
     root = Path(__file__).resolve().parents[2]
     out = build_dashboard(
         processed_dir=root / "data" / "processed",
-        blocks_path=root / "data" / "blocks.geojson",
         out_dir=root / "outputs" / "dashboard",
     )
     print(f"interactive dashboard -> {out}")

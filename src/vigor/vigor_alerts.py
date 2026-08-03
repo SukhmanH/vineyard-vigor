@@ -154,10 +154,10 @@ def compare_same_variety(
     - "no peers"     : only one block of that variety exists, so weather vs a
                        single-block cause cannot be told apart from vigor alone.
     """
-    variety = (
-        blocks.assign(variety=blocks["variety"].astype(str).str.strip().str.lower())
-        .set_index("block_id")["variety"]
-    )
+    # Variety spellings are canonicalised at ingest (extract.load_blocks), so
+    # this groups on the string as given. Case-folding here would not have
+    # merged genuine misspellings anyway.
+    variety = blocks.set_index("block_id")["variety"]
     a = alerts.copy()
     a["variety"] = a["block_id"].map(variety)
 

@@ -68,7 +68,7 @@ def _splice_year(fresh: pd.DataFrame, year: int) -> None:
 
 def main() -> int:
     extract.init_ee()
-    gdf = extract.load_blocks(ROOT / "data" / "blocks.geojson")
+    gdf = extract.load_blocks()
     this_year = dt.date.today().year
 
     have = set()

@@ -87,7 +87,7 @@ def _pull_year(gdf, year: int) -> pd.DataFrame | None:
 
 def main() -> int:
     extract.init_ee()
-    gdf = extract.load_blocks(ROOT / "data" / "blocks.geojson")
+    gdf = extract.load_blocks()
 
     old = ingest.load_timeseries(OUT)
     pre = old[old["date"] < pd.Timestamp(SPLICE_BEFORE)]
